@@ -1,4 +1,6 @@
 import json
+import os.path
+from collections import OrderedDict
 from json.decoder import JSONDecodeError
 from typing import List, Dict, Tuple
 
@@ -57,14 +59,44 @@ class TransferProductCatalogue:
     def __init__(self, source_file_name: str) -> None:
         self.source_file_name = source_file_name
         self.tree = Tree()
-        self.batch_size = 5  # later can be accepted as an argument
-        self.batch_of_product_info = list()
         self.api_client = API3()
+        self.pre_processed_nodes = OrderedDict()
+        self.pre_processed_product_groups_filename = "pre_processed_product_groups.json"
+        self.state_file_name = 'state_file.txt'
+        self.batch_size = 5 # can be accepted as an argument later on
 
-    def read_source_file(self) -> None:
+    def find_ancestors(self, node: Node, ancestors: Tuple) -> None:
+        """
+        Recursively find ancestors
+        Args:
+            node: node being processed
+            ancestors: list of ancestors of the current Node
+        """
+        self.pre_processed_nodes[node.id] = {
+            'id' : node.id,
+            "name": node.name,
+            "parent_id": node.parent.id if node.parent else None,
+            "ancestors": list(ancestors),
+        }
+        ancestors += (node.name,)
+        for child in node.children:
+            self.find_ancestors(child, ancestors)
+
+    def pre_process_nodes(self):
+        """
+        Preprocess source nodes to find the ancestors and save then in an external data source
+        """
+        for root in self.tree.root_nodes:
+            self.find_ancestors(root, ())
+        with open(self.pre_processed_product_groups_filename, "w+") as f:
+            json.dump(self.pre_processed_nodes, f, ensure_ascii=False, indent=4)
+
+    def process_source_file(self) -> None:
         """
         Read source file and create a Tree from the data
         """
+        if os.path.exists(self.pre_processed_product_groups_filename):
+            return
         try:
             with open(self.source_file_name, "rb") as f:
                 data = json.load(f)
@@ -73,39 +105,32 @@ class TransferProductCatalogue:
         else:
             for row in data:
                 self.tree.push(row)
-
-    def create_data_in_batch(self, product_info: Dict) -> None:
-        """
-        Create product in batches
-        Args:
-            product_info: product info to be added to the storage
-        """
-        if len(self.batch_of_product_info) == self.batch_size:
-            self.api_client.bulk_create(self.batch_of_product_info)
-            self.batch_of_product_info = list()
-        self.batch_of_product_info.append(product_info)
-
-    def create_node_in_datastore(self, node: Node, ancestors: Tuple) -> None:
-        """
-        Create node in the datastore and add all its children
-        Args:
-            node: Node to be inserted in the database
-            ancestors: list of ancestors
-        """
-        parent_id = node.parent.id if node.parent else None
-        product_info = {"name": node.name, "parent_id": parent_id, "ancestors": list(ancestors)}
-        self.create_data_in_batch(product_info)
-        ancestors += (node.name,)  # we want to use an immutable data type to hold ancestors
-        for child in node.children:
-            self.create_node_in_datastore(child, ancestors)
+            self.pre_process_nodes()
 
     def load_data_from_external_source(self) -> None:
         """
         Load the data from external source into our system using API1
         """
-        self.read_source_file()
-        for root in self.tree.root_nodes:
-            self.create_node_in_datastore(root, ())
-        # a case when the last batch had 4 or more products
-        if self.batch_of_product_info:
-            self.api_client.bulk_create(self.batch_of_product_info)
+        self.process_source_file()
+        try:
+            with open(self.pre_processed_product_groups_filename, "rb") as f:
+                data = json.load(f)
+        except JSONDecodeError:
+            raise ValueError("The input source file does not have a valid JSON")
+        else:
+            last_processing_record = None
+            if os.path.exists(self.state_file_name):
+                with open(self.state_file_name, 'r') as f:
+                    last_processing_record = int(f.readlines()[0])
+            total = len(data.keys())
+            for start in range(0, total, self.batch_size):
+                end = min(start + self.batch_size, total)
+                products = list(data.values())[start:end]
+                if not products:
+                    continue
+                if last_processing_record:
+                    if int(products[0]['id']) < last_processing_record:
+                        continue
+                with open(self.state_file_name, 'w+') as f:
+                    f.write(f'{products[0]["id"]}')
+                self.api_client.bulk_create(products)
