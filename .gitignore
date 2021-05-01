@@ -1,0 +1,8 @@
+# Pycache
+*.pyc
+__pycache__/
+# State files
+pre_processed_product_groups.json
+state_file.txt
+# Mac OS 
+.idea
