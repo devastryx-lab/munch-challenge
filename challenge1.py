@@ -1,6 +1,6 @@
 import json
 from json.decoder import JSONDecodeError
-from typing import List, Dict
+from typing import List, Dict, Tuple
 
 from api1 import API1
 
@@ -72,7 +72,7 @@ class TransferProductCatalogue:
             for row in data:
                 self.tree.push(row)
 
-    def create_node_in_datastore(self, node: Node, ancestors: List) -> None:
+    def create_node_in_datastore(self, node: Node, ancestors: Tuple) -> None:
         """
         Create node in the datastore and add all its children
         Args:
@@ -80,8 +80,8 @@ class TransferProductCatalogue:
             ancestors: list of ancestors
         """
         parent_id = node.parent.id if node.parent else None
-        self.api_client.create({"name": node.name, "parent_id": parent_id, "ancestors": ancestors})
-        ancestors.append(node.name)
+        self.api_client.create({"name": node.name, "parent_id": parent_id, "ancestors": list(ancestors)})
+        ancestors += (node.name,)  # we want to use an immutable data type to hold ancestors
         for child in node.children:
             self.create_node_in_datastore(child, ancestors)
 
@@ -91,4 +91,4 @@ class TransferProductCatalogue:
         """
         self.read_source_file()
         for root in self.tree.root_nodes:
-            self.create_node_in_datastore(root, list())
+            self.create_node_in_datastore(root, ())
